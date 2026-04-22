@@ -7,11 +7,10 @@ import com.trademarket.TradeMarketMod;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 
@@ -23,12 +22,10 @@ public class UpdateChecker {
     private static final Logger LOGGER = LoggerFactory.getLogger(TradeMarketMod.MOD_ID + "_updater");
     private static UpdateChecker instance;
     
-    // GitHub repository info - ИЗМЕНИ НА СВОЙ РЕПОЗИТОРИЙ
+    // GitHub repository info
     private static final String GITHUB_OWNER = "Nikita2888";
     private static final String GITHUB_REPO = "Trade-Market-Mod-Update";
     private static final String API_URL = "https://api.github.com/repos/" + GITHUB_OWNER + "/" + GITHUB_REPO + "/releases/latest";
-    
-    private final HttpClient httpClient;
     
     // Результат проверки
     private UpdateInfo latestUpdate = null;
@@ -44,9 +41,7 @@ public class UpdateChecker {
     }
     
     private UpdateChecker() {
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
+        // Конструктор пустой - используем HttpURLConnection
     }
     
     /**
@@ -81,20 +76,35 @@ public class UpdateChecker {
         checkError = null;
         latestUpdate = null;
         
+        LOGGER.info("[UpdateChecker] Начинаю проверку обновлений: {}", API_URL);
+        
         CompletableFuture.runAsync(() -> {
+            HttpURLConnection connection = null;
             try {
-                HttpRequest request = HttpRequest.newBuilder()
-                        .uri(URI.create(API_URL))
-                        .header("Accept", "application/vnd.github.v3+json")
-                        .header("User-Agent", "TradeMarket-Mod/" + TradeMarketMod.MOD_VERSION)
-                        .timeout(Duration.ofSeconds(15))
-                        .GET()
-                        .build();
+                URL url = new URL(API_URL);
+                connection = (HttpURLConnection) url.openConnection();
+                connection.setRequestMethod("GET");
+                connection.setRequestProperty("Accept", "application/vnd.github.v3+json");
+                connection.setRequestProperty("User-Agent", "TradeMarket-Mod/" + TradeMarketMod.MOD_VERSION);
+                connection.setConnectTimeout(15000);
+                connection.setReadTimeout(15000);
                 
-                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+                int responseCode = connection.getResponseCode();
+                LOGGER.info("[UpdateChecker] HTTP Response: {}", responseCode);
                 
-                if (response.statusCode() == 200) {
-                    JsonObject json = JsonParser.parseString(response.body()).getAsJsonObject();
+                if (responseCode == 200) {
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
+                    StringBuilder response = new StringBuilder();
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        response.append(line);
+                    }
+                    reader.close();
+                    
+                    String responseBody = response.toString();
+                    LOGGER.info("[UpdateChecker] Получен ответ длиной {} символов", responseBody.length());
+                    
+                    JsonObject json = JsonParser.parseString(responseBody).getAsJsonObject();
                     
                     String tagName = json.get("tag_name").getAsString();
                     // Убираем 'v' из версии если есть (v1.2.0 -> 1.2.0)
@@ -135,8 +145,9 @@ public class UpdateChecker {
                         onSuccess.accept(latestUpdate);
                     }
                     
-                } else if (response.statusCode() == 404) {
+                } else if (responseCode == 404) {
                     // Нет релизов
+                    LOGGER.warn("[UpdateChecker] Релизы не найдены (404)");
                     checkError = "Релизы не найдены";
                     checkComplete = true;
                     checkInProgress = false;
@@ -145,7 +156,8 @@ public class UpdateChecker {
                         onError.accept(checkError);
                     }
                 } else {
-                    checkError = "HTTP " + response.statusCode();
+                    LOGGER.warn("[UpdateChecker] Неожиданный HTTP код: {}", responseCode);
+                    checkError = "HTTP " + responseCode;
                     checkComplete = true;
                     checkInProgress = false;
                     
@@ -155,13 +167,18 @@ public class UpdateChecker {
                 }
                 
             } catch (Exception e) {
-                LOGGER.error("[UpdateChecker] Ошибка проверки обновлений: ", e);
+                LOGGER.error("[UpdateChecker] Ошибка проверки обновлений: {}", e.getMessage());
+                e.printStackTrace();
                 checkError = e.getMessage();
                 checkComplete = true;
                 checkInProgress = false;
                 
                 if (onError != null) {
                     onError.accept(checkError);
+                }
+            } finally {
+                if (connection != null) {
+                    connection.disconnect();
                 }
             }
         });
