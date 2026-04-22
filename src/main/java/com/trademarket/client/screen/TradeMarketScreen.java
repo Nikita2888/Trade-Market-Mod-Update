@@ -23,7 +23,9 @@ import net.minecraft.util.Identifier;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 // Импорт модульных классов
@@ -65,6 +67,11 @@ public class TradeMarketScreen extends Screen {
     private int chatScrollOffset = 0;
     private long lastChatRefresh = 0;
     private int chatMaxVisible = 5; // Будет обновляться при рендере
+    
+    // Кэш сообщений для мгновенной загрузки
+    private Map<UUID, List<SupabaseClient.ChatMessage>> messagesCache = new HashMap<>();
+    private Map<UUID, Long> messagesCacheTime = new HashMap<>();
+    private static final long MESSAGES_CACHE_TTL = 30000; // 30 секунд
     
     // Поля ввода
     private String priceText = "";           // Поле для цены
@@ -485,31 +492,43 @@ public class TradeMarketScreen extends Screen {
     private void loadChatMessages(boolean scrollToBottom) {
         if (selectedListing == null) return;
         
+        UUID listingId = selectedListing.getListingId();
+        
+        // Проверяем кэш - если есть свежие данные, используем их мгновенно
+        Long cacheTime = messagesCacheTime.get(listingId);
+        List<SupabaseClient.ChatMessage> cached = messagesCache.get(listingId);
+        
+        if (cached != null && cacheTime != null && 
+                System.currentTimeMillis() - cacheTime < MESSAGES_CACHE_TTL) {
+            // Используем кэш мгновенно
+            chatMessages = new ArrayList<>(cached);
+            if (scrollToBottom) {
+                int maxScroll = Math.max(0, cached.size() - chatMaxVisible);
+                chatScrollOffset = maxScroll;
+            }
+            markMarketChatMessagesAsRead();
+        }
+        
+        // Всё равно обновляем из сети для актуальности
         lastChatRefresh = System.currentTimeMillis();
         final int prevMessageCount = chatMessages.size();
-        // Проверяем, бы�� ли пользователь внизу ���������ата (с у��етом небольшого запаса)
         final int maxScrollPrev = Math.max(0, chatMessages.size() - chatMaxVisible);
         final boolean wasAtBottom = chatMessages.isEmpty() || chatScrollOffset >= maxScrollPrev - 1;
         
         SupabaseClient.getInstance().fetchMessages(
-            selectedListing.getListingId(),
+            listingId,
             messages -> {
-                // Уведомления о новых сообщениях обрабатываются в NotificationChecker
-                // Здесь только обновляем список сообщений
+                // Обновляем кэш
+                messagesCache.put(listingId, new ArrayList<>(messages));
+                messagesCacheTime.put(listingId, System.currentTimeMillis());
+                
                 chatMessages = messages;
                 
-                // Всегда скроллим вниз если:
-                // - явно запрошено scrollToBottom
-                // - появились новые сообщения и пользователь был внизу чата
                 if (scrollToBottom || (messages.size() > prevMessageCount && wasAtBottom)) {
-                    // Скроллим в самый низ - offset указывает на первое видимое сообщение
-                    // Чтобы показать последние сообщения, offset = total - maxVisible
                     int maxScroll = Math.max(0, messages.size() - chatMaxVisible);
                     chatScrollOffset = maxScroll;
                 }
-                // Иначе сохраняем текущую позицию (пользователь читает историю)
                 
-                // Помечаем сообщения как прочитанные
                 markMarketChatMessagesAsRead();
             },
             error -> TradeMarketMod.LOGGER.error("Chat load error: " + error)
@@ -604,6 +623,40 @@ public class TradeMarketScreen extends Screen {
         } else if (currentTab == 3) {
             // Вкладка "Избранное"
             displayedListings = MarketDataManager.getInstance().getFavoriteListings();
+        }
+        
+        // Предзагружаем сообщения для отображаемых лотов
+        preloadMessagesForListings();
+    }
+    
+    /**
+     * Предзагружает сообщения для списка лотов в фоне
+     */
+    private void preloadMessagesForListings() {
+        if (displayedListings == null || displayedListings.isEmpty()) return;
+        
+        // Загружаем только для первых 10 лотов (чтобы не перегружать)
+        int count = Math.min(displayedListings.size(), 10);
+        
+        for (int i = 0; i < count; i++) {
+            MarketListing listing = displayedListings.get(i);
+            UUID listingId = listing.getListingId();
+            
+            // Пропускаем если уже в кэше и не устарело
+            Long cacheTime = messagesCacheTime.get(listingId);
+            if (cacheTime != null && System.currentTimeMillis() - cacheTime < MESSAGES_CACHE_TTL) {
+                continue;
+            }
+            
+            // Загружаем в фоне
+            SupabaseClient.getInstance().fetchMessages(
+                listingId,
+                messages -> {
+                    messagesCache.put(listingId, new ArrayList<>(messages));
+                    messagesCacheTime.put(listingId, System.currentTimeMillis());
+                },
+                error -> {} // Тихо игнорируем ошибки предзагрузки
+            );
         }
     }
 
@@ -1268,7 +1321,7 @@ public class TradeMarketScreen extends Screen {
         // ===== ЧАТ =====
         // Фиксированная позиция чата - одинаковая дл�� продавца и ����купателя
         // Резервир��������������ем место для кнопок даже если их нет (чтоб�� чат был одинакового размера)
-        int fixedChatOffset = 95; // Фиксированный отступ от начала контента (место для кнопок)
+        int fixedChatOffset = 95; // Фиксированный отступ от нач��ла контента (место для кнопок)
         int chatY = itemInfoY + fixedChatOffset;
         // Учитываем высоту ��оля ввода (20px) + отступы (5px + 10px снизу) = 35px
         int chatHeight = contentHeight - fixedChatOffset - 45;
@@ -1295,7 +1348,7 @@ public class TradeMarketScreen extends Screen {
         context.fill(contentX + 11, chatY + 1, contentX + 9 + chatWidth, chatY + 2, 0x15FFFFFF);
         drawBorder(context, contentX + 10, chatY, chatWidth, chatHeight, COLOR_INPUT_BORDER);
         
-        // Сообщения - ограничивае�������� количество видимых сообщений по высоте чата
+        // Сообщения - ограничивае�������� количество видимых сообщений по высоте ��ата
         int msgY = chatY + 5;
         int msgHeight = CHAT_MSG_HEIGHT;
         chatMaxVisible = (chatHeight - 10) / msgHeight; // Вычисляем сколько помещается
@@ -2691,7 +2744,7 @@ public class TradeMarketScreen extends Screen {
     private boolean canSellItem(ItemStack stack) {
         if (stack.isEmpty()) return false;
         
-        // Проверяем название предмета на н����продаваемые предметы Wynncraft
+        // Проверяем название предмета ��а н����продаваемые предметы Wynncraft
         String itemName = stack.getName().getString().toLowerCase();
         if (itemName.contains("emerald pouch") || 
             itemName.contains("content book") || 
@@ -2852,7 +2905,7 @@ public class TradeMarketScreen extends Screen {
                 return true;
             }
             
-            // Обработка кликов по кнопке оценки продавца
+            // Обработка клико�� по кнопке оценки продавца
             if (client.player != null && !selectedListing.getSellerId().equals(client.player.getUuid())) {
                 LocalizationManager lang = LocalizationManager.getInstance();
                 boolean canRate = hasConfirmedTransaction && !hasAlreadyRated;
@@ -2936,7 +2989,7 @@ public class TradeMarketScreen extends Screen {
             if (client.player != null && !selectedListing.getSellerId().equals(client.player.getUuid())) {
                 LocalizationManager langLocal = LocalizationManager.getInstance();
                 
-                // Вычисляем currentLineY к��к при рендеринге
+                // Вычисляем currentLineY к���к при рендеринге
                 int calcLineY = itemInfoY + 28;
                 String priceVal = selectedListing.getPrice();
                 if (priceVal != null && !priceVal.isEmpty()) {
@@ -4111,7 +4164,7 @@ public class TradeMarketScreen extends Screen {
      * Рисует панель ожидающих подтверж��ения транзакций
      */
     private void drawPendingTransactionsPanel(DrawContext context, int mouseX, int mouseY) {
-        // Показыва��м только в режиме просмотра деталей лота
+        // Пока��ыва��м только в режиме просмотра деталей лота
         if (!viewingDetails) return;
         
         LocalizationManager lang = LocalizationManager.getInstance();

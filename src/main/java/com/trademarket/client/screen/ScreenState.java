@@ -46,6 +46,11 @@ public class ScreenState {
     public int chatScrollOffset = 0;
     public long lastChatRefresh = 0;
     public int chatMaxVisible = 5;
+    
+    // Кэш сообщений для мгновенной загрузки
+    public Map<UUID, List<SupabaseClient.ChatMessage>> messagesCache = new HashMap<>();
+    public Map<UUID, Long> messagesCacheTime = new HashMap<>();
+    public static final long MESSAGES_CACHE_TTL = 30000; // 30 секунд
 
     // ==================== ПОЛЯ ВВОДА ====================
     

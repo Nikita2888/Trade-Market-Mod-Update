@@ -3,9 +3,11 @@ package com.trademarket.client.screen;
 import com.trademarket.TradeMarketMod;
 import com.trademarket.client.LocalizationManager;
 import com.trademarket.data.MarketDataManager;
+import com.trademarket.data.MarketListing;
 import com.trademarket.data.SupabaseClient;
 import net.minecraft.client.MinecraftClient;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -152,19 +154,41 @@ public class DataLoader {
     }
 
     /**
-     * Загружает сообщения чата лота
+     * Загружает сообщения чата лота (с кэшированием)
      */
     public void loadChatMessages(boolean scrollToBottom) {
         if (state.selectedListing == null) return;
         
+        UUID listingId = state.selectedListing.getListingId();
+        
+        // Проверяем кэш - если есть свежие данные, используем их мгновенно
+        Long cacheTime = state.messagesCacheTime.get(listingId);
+        List<SupabaseClient.ChatMessage> cached = state.messagesCache.get(listingId);
+        
+        if (cached != null && cacheTime != null && 
+                System.currentTimeMillis() - cacheTime < ScreenState.MESSAGES_CACHE_TTL) {
+            // Используем кэш мгновенно
+            state.chatMessages = new java.util.ArrayList<>(cached);
+            if (scrollToBottom) {
+                int maxScroll = Math.max(0, cached.size() - state.chatMaxVisible);
+                state.chatScrollOffset = maxScroll;
+            }
+            markMarketChatMessagesAsRead();
+        }
+        
+        // Всё равно обновляем из сети для актуальности
         state.lastChatRefresh = System.currentTimeMillis();
         final int prevMessageCount = state.chatMessages.size();
         final int maxScrollPrev = Math.max(0, state.chatMessages.size() - state.chatMaxVisible);
         final boolean wasAtBottom = state.chatMessages.isEmpty() || state.chatScrollOffset >= maxScrollPrev - 1;
         
         SupabaseClient.getInstance().fetchMessages(
-            state.selectedListing.getListingId(),
+            listingId,
             messages -> {
+                // Обновляем кэш
+                state.messagesCache.put(listingId, new java.util.ArrayList<>(messages));
+                state.messagesCacheTime.put(listingId, System.currentTimeMillis());
+                
                 state.chatMessages = messages;
                 
                 if (scrollToBottom || (messages.size() > prevMessageCount && wasAtBottom)) {
@@ -177,6 +201,37 @@ public class DataLoader {
             },
             error -> TradeMarketMod.LOGGER.error("Chat load error: " + error)
         );
+    }
+    
+    /**
+     * Предзагружает сообщения для списка лотов в фоне
+     */
+    public void preloadMessagesForListings(List<MarketListing> listings) {
+        if (listings == null || listings.isEmpty()) return;
+        
+        // Загружаем только для первых 10 лотов (чтобы не перегружать)
+        int count = Math.min(listings.size(), 10);
+        
+        for (int i = 0; i < count; i++) {
+            MarketListing listing = listings.get(i);
+            UUID listingId = listing.getListingId();
+            
+            // Пропускаем если уже в кэше и не устарело
+            Long cacheTime = state.messagesCacheTime.get(listingId);
+            if (cacheTime != null && System.currentTimeMillis() - cacheTime < ScreenState.MESSAGES_CACHE_TTL) {
+                continue;
+            }
+            
+            // Загружаем в фоне
+            SupabaseClient.getInstance().fetchMessages(
+                listingId,
+                messages -> {
+                    state.messagesCache.put(listingId, new java.util.ArrayList<>(messages));
+                    state.messagesCacheTime.put(listingId, System.currentTimeMillis());
+                },
+                error -> {} // Тихо игнорируем ошибки предзагрузки
+            );
+        }
     }
 
     /**
@@ -378,6 +433,9 @@ public class DataLoader {
         } else if (state.currentTab == 3) {
             state.displayedListings = MarketDataManager.getInstance().getFavoriteListings();
         }
+        
+        // Предзагружаем сообщения для отображаемых лотов
+        preloadMessagesForListings(state.displayedListings);
     }
 
     /**
