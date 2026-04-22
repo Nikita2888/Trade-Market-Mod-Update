@@ -24,8 +24,8 @@ public class UpdateChecker {
     private static UpdateChecker instance;
     
     // GitHub repository info - ИЗМЕНИ НА СВОЙ РЕПОЗИТОРИЙ
-    private static final String GITHUB_OWNER = "YOUR_GITHUB_USERNAME";
-    private static final String GITHUB_REPO = "trademarket-mod";
+    private static final String GITHUB_OWNER = "Nikita2888";
+    private static final String GITHUB_REPO = "Trade-Market-Mod-Update";
     private static final String API_URL = "https://api.github.com/repos/" + GITHUB_OWNER + "/" + GITHUB_REPO + "/releases/latest";
     
     private final HttpClient httpClient;
