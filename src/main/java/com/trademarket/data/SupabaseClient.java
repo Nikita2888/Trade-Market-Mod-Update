@@ -1590,8 +1590,14 @@ public class SupabaseClient {
                         try {
                             JsonArray array = JsonParser.parseString(response.body()).getAsJsonArray();
                             for (int i = 0; i < array.size(); i++) {
-                                JsonObject obj = array.get(i).getAsJsonObject();
-                                listingIds.add(UUID.fromString(obj.get("listing_id").getAsString()));
+                                JsonElement element = array.get(i);
+                                // Поддержка двух форматов: объект с listing_id или просто строка UUID
+                                if (element.isJsonObject()) {
+                                    JsonObject obj = element.getAsJsonObject();
+                                    listingIds.add(UUID.fromString(obj.get("listing_id").getAsString()));
+                                } else if (element.isJsonPrimitive()) {
+                                    listingIds.add(UUID.fromString(element.getAsString()));
+                                }
                             }
                         } catch (Exception e) {
                             TradeMarketMod.LOGGER.error("Error parsing favorites: " + e.getMessage());
