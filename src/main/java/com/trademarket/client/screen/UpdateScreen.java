@@ -6,8 +6,10 @@ import com.trademarket.client.UpdateChecker;
 import com.trademarket.data.SupabaseClient;
 import com.trademarket.network.NetworkHandler;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.input.KeyInput;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.Util;
@@ -408,51 +410,52 @@ public class UpdateScreen extends Screen {
     }
     
     @Override
-    public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        if (button == 0) {
-            int btnY = guiTop + WINDOW_HEIGHT - 40;
-            int btnHeight = 24;
+    public boolean mouseClicked(Click click, boolean bl) {
+        int mx = (int) click.x();
+        int my = (int) click.y();
+        
+        int btnY = guiTop + WINDOW_HEIGHT - 40;
+        int btnHeight = 24;
+        
+        if (currentState == State.UPDATE_FOUND) {
+            // Две кнопки
+            int btnWidth = 140;
+            int gap = 20;
+            int totalWidth = btnWidth * 2 + gap;
+            int startX = guiLeft + (WINDOW_WIDTH - totalWidth) / 2;
             
-            if (currentState == State.UPDATE_FOUND) {
-                // Две кнопки
-                int btnWidth = 140;
-                int gap = 20;
-                int totalWidth = btnWidth * 2 + gap;
-                int startX = guiLeft + (WINDOW_WIDTH - totalWidth) / 2;
+            // Скачать
+            if (mx >= startX && mx < startX + btnWidth &&
+                    my >= btnY && my < btnY + btnHeight) {
                 
-                // Скачать
-                if (mouseX >= startX && mouseX < startX + btnWidth &&
-                        mouseY >= btnY && mouseY < btnY + btnHeight) {
-                    
-                    UpdateChecker.UpdateInfo update = UpdateChecker.getInstance().getLatestUpdate();
-                    if (update != null && !update.downloadUrl.isEmpty()) {
-                        Util.getOperatingSystem().open(update.downloadUrl);
-                    }
-                    return true;
+                UpdateChecker.UpdateInfo update = UpdateChecker.getInstance().getLatestUpdate();
+                if (update != null && !update.downloadUrl.isEmpty()) {
+                    Util.getOperatingSystem().open(update.downloadUrl);
                 }
-                
-                // Продолжить
-                int continueX = startX + btnWidth + gap;
-                if (mouseX >= continueX && mouseX < continueX + btnWidth &&
-                        mouseY >= btnY && mouseY < btnY + btnHeight) {
-                    openMainMenu();
-                    return true;
-                }
-                
-            } else if (currentState == State.UP_TO_DATE || currentState == State.ERROR) {
-                // Одна кнопка
-                int btnWidth = 160;
-                int btnX = guiLeft + (WINDOW_WIDTH - btnWidth) / 2;
-                
-                if (mouseX >= btnX && mouseX < btnX + btnWidth &&
-                        mouseY >= btnY && mouseY < btnY + btnHeight) {
-                    openMainMenu();
-                    return true;
-                }
+                return true;
+            }
+            
+            // Продолжить
+            int continueX = startX + btnWidth + gap;
+            if (mx >= continueX && mx < continueX + btnWidth &&
+                    my >= btnY && my < btnY + btnHeight) {
+                openMainMenu();
+                return true;
+            }
+            
+        } else if (currentState == State.UP_TO_DATE || currentState == State.ERROR) {
+            // Одна кнопка
+            int btnWidth = 160;
+            int btnX = guiLeft + (WINDOW_WIDTH - btnWidth) / 2;
+            
+            if (mx >= btnX && mx < btnX + btnWidth &&
+                    my >= btnY && my < btnY + btnHeight) {
+                openMainMenu();
+                return true;
             }
         }
         
-        return super.mouseClicked(mouseX, mouseY, button);
+        return super.mouseClicked(click, bl);
     }
     
     @Override
@@ -478,7 +481,8 @@ public class UpdateScreen extends Screen {
     }
     
     @Override
-    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+    public boolean keyPressed(KeyInput keyInput) {
+        int keyCode = keyInput.key();
         // ESC или Enter - продолжить (если проверка завершена)
         if ((keyCode == 256 || keyCode == 257) && canProceed && 
                 (currentState == State.UP_TO_DATE || currentState == State.ERROR || currentState == State.UPDATE_FOUND)) {
@@ -486,7 +490,7 @@ public class UpdateScreen extends Screen {
             return true;
         }
         
-        return super.keyPressed(keyCode, scanCode, modifiers);
+        return super.keyPressed(keyInput);
     }
     
     private void openMainMenu() {
