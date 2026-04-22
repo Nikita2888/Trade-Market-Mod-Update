@@ -307,7 +307,7 @@ public class TradeMarketScreen extends Screen {
                 }
             },
             error -> {
-                // При ошибке проверки все равно пытаемся создать (сервер отклонит дубликат)
+                // При ошибке проверки все равно п��таемся создать (сервер отклонит дубликат)
                 createPendingTransaction();
             }
         );
@@ -355,7 +355,7 @@ public class TradeMarketScreen extends Screen {
             () -> {
                 setStatusMessage(lang.get("deal_started"));
                 SoundManager.getInstance().playSuccessSound();
-                // Помечаем что сделка уже существует - предотвращает повторные клики
+                // Помечаем что с��елка уже существует - предотвращает повторные клики
                 hasExistingDealOnListing = true;
                 // Обновляем pending transactions
                 loadPendingTransactions();
@@ -593,15 +593,51 @@ public class TradeMarketScreen extends Screen {
         
         String msg = messageText;
         messageText = "";
+        UUID listingId = selectedListing.getListingId();
         
-        // Используе�� sendChatMessage который проверяет бан на сервере
-        SupabaseClient.getInstance().sendChatMessage(
-            selectedListing.getListingId(),
+        // Optimistic update - добавляем сообщение мгновенно в UI
+        SupabaseClient.ChatMessage optimisticMsg = new SupabaseClient.ChatMessage(
+            UUID.randomUUID(), // временный ID
+            listingId,
             client.player.getUuid(),
             client.player.getName().getString(),
             msg,
-            () -> loadChatMessages(true), // Скроллим вниз после отправки
+            System.currentTimeMillis()
+        );
+        chatMessages.add(optimisticMsg);
+        
+        // Обновляем кэш
+        List<SupabaseClient.ChatMessage> cachedMessages = messagesCache.get(listingId);
+        if (cachedMessages != null) {
+            cachedMessages.add(optimisticMsg);
+        } else {
+            cachedMessages = new ArrayList<>();
+            cachedMessages.add(optimisticMsg);
+            messagesCache.put(listingId, cachedMessages);
+        }
+        messagesCacheTime.put(listingId, System.currentTimeMillis());
+        
+        // Скроллим вниз
+        int maxScroll = Math.max(0, chatMessages.size() - chatMaxVisible);
+        chatScrollOffset = maxScroll;
+        
+        // Отправляем на сервер в фоне
+        SupabaseClient.getInstance().sendChatMessage(
+            listingId,
+            client.player.getUuid(),
+            client.player.getName().getString(),
+            msg,
+            () -> {
+                // Успех - обновляем сообщения с сервера для получения правильных ID
+                loadChatMessages(true);
+            },
             error -> {
+                // Ошибка - убираем оптимистичное сообщение
+                chatMessages.remove(optimisticMsg);
+                List<SupabaseClient.ChatMessage> cached = messagesCache.get(listingId);
+                if (cached != null) {
+                    cached.remove(optimisticMsg);
+                }
                 setStatusMessage(LocalizationManager.getInstance().get("error_generic", error));
                 TradeMarketMod.LOGGER.error("Send message error: " + error);
             }
@@ -1321,7 +1357,7 @@ public class TradeMarketScreen extends Screen {
         // ===== ЧАТ =====
         // Фиксированная позиция чата - одинаковая дл�� продавца и ����купателя
         // Резервир��������������ем место для кнопок даже если их нет (чтоб�� чат был одинакового размера)
-        int fixedChatOffset = 95; // Фиксированный отступ от нач��ла контента (место для кнопок)
+        int fixedChatOffset = 95; // Фиксированный отступ от нач��ла контен��а (место для кнопок)
         int chatY = itemInfoY + fixedChatOffset;
         // Учитываем высоту ��оля ввода (20px) + отступы (5px + 10px снизу) = 35px
         int chatHeight = contentHeight - fixedChatOffset - 45;
@@ -1630,7 +1666,7 @@ public class TradeMarketScreen extends Screen {
      * Основано на WynnTils StyledText.stripAlignment()
      */
     /**
-     * Обрабатывает клик по закладке соцсетей
+     * Обрабатывает клик ��о закладке соцсетей
      */
     private boolean handleSocialBookmarkClick(int mx, int my) {
         int currentGuiRight = viewingDetails ? (this.width + DETAILS_WIDTH) / 2 : guiLeft + GUI_WIDTH;
