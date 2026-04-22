@@ -27,6 +27,10 @@ public class UpdateChecker {
     private static final String GITHUB_REPO = "Trade-Market-Mod-Update";
     private static final String API_URL = "https://api.github.com/repos/" + GITHUB_OWNER + "/" + GITHUB_REPO + "/releases/latest";
     
+    // GitHub Personal Access Token для приватного репозитория
+    // Создай токен на https://github.com/settings/tokens с правами "repo"
+    private static final String GITHUB_TOKEN = "ВСТАВЬ_СЮДА_СВОЙ_ТОКЕН";
+    
     // Результат проверки
     private UpdateInfo latestUpdate = null;
     private boolean checkInProgress = false;
@@ -86,6 +90,12 @@ public class UpdateChecker {
                 connection.setRequestMethod("GET");
                 connection.setRequestProperty("Accept", "application/vnd.github.v3+json");
                 connection.setRequestProperty("User-Agent", "TradeMarket-Mod/" + TradeMarketMod.MOD_VERSION);
+                
+                // Авторизация для приватного репозитория
+                if (GITHUB_TOKEN != null && !GITHUB_TOKEN.isEmpty() && !GITHUB_TOKEN.startsWith("ВСТАВЬ")) {
+                    connection.setRequestProperty("Authorization", "Bearer " + GITHUB_TOKEN);
+                }
+                
                 connection.setConnectTimeout(15000);
                 connection.setReadTimeout(15000);
                 

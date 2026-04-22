@@ -52,6 +52,7 @@ public class UpdateScreen extends Screen {
     // Changelog scroll
     private int changelogScrollOffset = 0;
     private List<String> changelogLines = new ArrayList<>();
+    private boolean changelogParsed = false;
     
     public UpdateScreen() {
         super(Text.literal("Update Check"));
@@ -61,17 +62,21 @@ public class UpdateScreen extends Screen {
         UpdateChecker.getInstance().reset();
         UpdateChecker.getInstance().checkForUpdates(
             updateInfo -> {
-                // Успешно получили информацию
-                if (updateInfo.isNewer) {
-                    currentState = State.UPDATE_FOUND;
-                    parseChangelog(updateInfo.changelog);
-                } else {
-                    currentState = State.UP_TO_DATE;
-                }
+                // Выполняем в главном потоке Minecraft
+                MinecraftClient.getInstance().execute(() -> {
+                    if (updateInfo.isNewer) {
+                        currentState = State.UPDATE_FOUND;
+                        // parseChangelog вызовется в init() когда textRenderer будет готов
+                    } else {
+                        currentState = State.UP_TO_DATE;
+                    }
+                });
             },
             error -> {
-                // Ошибка - но все равно позволяем войти
-                currentState = State.ERROR;
+                // Выполняем в главном потоке Minecraft
+                MinecraftClient.getInstance().execute(() -> {
+                    currentState = State.ERROR;
+                });
             }
         );
     }
@@ -111,11 +116,6 @@ public class UpdateScreen extends Screen {
     protected void init() {
         this.guiLeft = (this.width - WINDOW_WIDTH) / 2;
         this.guiTop = (this.height - WINDOW_HEIGHT) / 2;
-        
-        // Перепарсим changelog если textRenderer теперь доступен
-        if (currentState == State.UPDATE_FOUND && UpdateChecker.getInstance().getLatestUpdate() != null) {
-            parseChangelog(UpdateChecker.getInstance().getLatestUpdate().changelog);
-        }
     }
     
     @Override
@@ -130,6 +130,15 @@ public class UpdateScreen extends Screen {
         long elapsed = System.currentTimeMillis() - startTime;
         if (elapsed >= MIN_CHECKING_TIME && UpdateChecker.getInstance().isCheckComplete()) {
             canProceed = true;
+            
+            // Парсим changelog только один раз и только в render thread
+            if (!changelogParsed && currentState == State.UPDATE_FOUND) {
+                UpdateChecker.UpdateInfo update = UpdateChecker.getInstance().getLatestUpdate();
+                if (update != null) {
+                    parseChangelog(update.changelog);
+                    changelogParsed = true;
+                }
+            }
         }
         
         // Основная панель
