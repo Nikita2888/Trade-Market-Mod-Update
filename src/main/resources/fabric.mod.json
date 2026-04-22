@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "trademarket",
+  "version": "${version}",
+  "name": "Trade Market",
+  "description": "A marketplace mod where players can list items for sale and contact sellers to trade.",
+  "authors": ["TradeMarket Team"],
+  "contact": {},
+  "license": "MIT",
+  "icon": "assets/trademarket/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["com.trademarket.TradeMarketMod"],
+    "client": ["com.trademarket.client.TradeMarketClient"]
+  },
+  "mixins": [],
+  "depends": {
+    "fabricloader": ">=0.18.0",
+    "minecraft": "~1.21.11",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
