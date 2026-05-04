@@ -20,12 +20,29 @@ import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 
 /**
- * Клиент для работы с Supabase REST API
+ * Клиент для работы с REST API
+ * Поддерживает два режима: Supabase и собственный VPS сервер
+ * Режим настраивается в файле config/trademarket_api.json
+ * 
+ * Гибридный подход: чтение через REST API, запись через Edge Functions / Express API
  */
 public class SupabaseClient {
     
-    // Edge Function URL - ключ Supabase теперь хранится на сервере, а не в моде
-    private static final String API_URL = "https://erxijnqrxnwfoesptgzo.supabase.co/functions/v1/trade-api";
+    // Конфигурация API (поддержка Supabase и VPS)
+    private final ApiConfig apiConfig = ApiConfig.getInstance();
+    
+    // Геттеры для URL (теперь берутся из конфига)
+    private String getEdgeApiUrl() {
+        return apiConfig.getApiUrl();
+    }
+    
+    private String getRestUrl() {
+        return apiConfig.getRestUrl();
+    }
+    
+    private String getApiKey() {
+        return apiConfig.getApiKey();
+    }
     
     private final HttpClient httpClient;
     private final Gson gson;
@@ -82,15 +99,29 @@ public class SupabaseClient {
      * Получить URL API (для RemoteLogger)
      */
     public String getApiUrl() {
-        return API_URL;
+        return getEdgeApiUrl();
     }
     
     /**
-     * Создать базовый запрос с заголовками авторизации
+     * Получить текущий режим API
      */
-    private HttpRequest.Builder createRequest(String endpoint) {
+    public String getApiMode() {
+        return apiConfig.getMode();
+    }
+    
+    /**
+     * Проверить, используется ли VPS режим
+     */
+    public boolean isVpsMode() {
+        return apiConfig.isVpsMode();
+    }
+    
+    /**
+     * Создать запрос к Edge Functions / Express API (для операций записи)
+     */
+    private HttpRequest.Builder createEdgeRequest(String endpoint) {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
-                .uri(URI.create(API_URL + endpoint))
+                .uri(URI.create(getEdgeApiUrl() + endpoint))
                 .header("Content-Type", "application/json");
         
         // Добавляем заголовки игрока только если данные установлены
@@ -101,14 +132,50 @@ public class SupabaseClient {
             builder.header("x-player-name", currentPlayerName);
         }
         
+        // Для VPS режима добавляем API ключ если он настроен
+        if (apiConfig.isVpsMode() && !getApiKey().isEmpty()) {
+            builder.header("x-api-key", getApiKey());
+        }
+        
         return builder;
     }
     
     /**
-     * Получить все активные лоты
+     * Создать запрос к REST API (для операций чтения)
+     * Для Supabase: использует anon key - безопасно благодаря RLS политикам
+     * Для VPS: использует x-api-key если настроен
+     */
+    private HttpRequest.Builder createRestRequest(String endpoint) {
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
+                .uri(URI.create(getRestUrl() + endpoint))
+                .header("Content-Type", "application/json");
+        
+        if (apiConfig.needsSupabaseAuth()) {
+            // Supabase режим - нужны специальные заголовки
+            builder.header("apikey", getApiKey());
+            builder.header("Authorization", "Bearer " + getApiKey());
+        } else if (!getApiKey().isEmpty()) {
+            // VPS режим с API ключом
+            builder.header("x-api-key", getApiKey());
+        }
+        
+        return builder;
+    }
+    
+    /**
+     * @deprecated Используй createEdgeRequest для записи или createRestRequest для чтения
+     */
+    @Deprecated
+    private HttpRequest.Builder createRequest(String endpoint) {
+        return createEdgeRequest(endpoint);
+    }
+    
+    /**
+     * Получить все активные лоты (прямой REST API)
      */
     public void fetchAllListings(Consumer<List<MarketListing>> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/listings")
+        // Используем прямой Supabase REST API для чтения
+        HttpRequest request = createRestRequest("/market_listings?active=eq.true&order=created_at.desc")
                 .GET()
                 .build();
         
@@ -128,10 +195,11 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить лоты конкретного продавца
+     * Получить лоты конкретного продавца (прямой REST API)
      */
     public void fetchSellerListings(String sellerId, Consumer<List<MarketListing>> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/listings?seller_id=" + sellerId)
+        // Используем прямой Supabase REST API для чтения
+        HttpRequest request = createRestRequest("/market_listings?seller_id=eq." + sellerId + "&order=created_at.desc")
                 .GET()
                 .build();
         
@@ -151,10 +219,11 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить лот по ID
+     * Получить лот по ID (прямой REST API)
      */
     public void getListingById(UUID listingId, Consumer<MarketListing> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/listings?id=" + listingId.toString())
+        // Используем прямой Supabase REST API для чтения
+        HttpRequest request = createRestRequest("/market_listings?id=eq." + listingId.toString())
                 .GET()
                 .build();
         
@@ -178,9 +247,13 @@ public class SupabaseClient {
     }
     
     /**
-     * Создать новый лот
+     * Создать новый лот (через API)
      */
     public void createListing(MarketListing listing, Runnable onSuccess, Consumer<String> onError) {
+        String apiUrl = getEdgeApiUrl();
+        TradeMarketMod.LOGGER.info("[CreateListing] Using API URL: " + apiUrl);
+        TradeMarketMod.LOGGER.info("[CreateListing] Mode: " + (apiConfig.isVpsMode() ? "VPS" : "Supabase"));
+        
         JsonObject json = new JsonObject();
         json.addProperty("id", listing.getListingId().toString());
         json.addProperty("seller_id", listing.getSellerId().toString());
@@ -193,7 +266,8 @@ public class SupabaseClient {
         json.addProperty("description", listing.getDescription());
         json.addProperty("active", listing.isActive());
         
-        HttpRequest request = createRequest("/listings")
+        // Используем API для записи
+        HttpRequest request = createEdgeRequest("/listings")
                 .POST(HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
         
@@ -213,10 +287,11 @@ public class SupabaseClient {
     }
     
     /**
-     * Удалить лот (деактивировать)
+     * Удалить лот (деактивировать) - через Edge Function
      */
     public void removeListing(UUID listingId, Runnable onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/listings/" + listingId.toString())
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/listings/" + listingId.toString())
                 .DELETE()
                 .build();
         
@@ -236,14 +311,15 @@ public class SupabaseClient {
     }
     
     /**
-     * Обновить лот (цену и условия)
+     * Обновить лот (цену и условия) - через Edge Function
      */
     public void updateListing(UUID listingId, String price, String description, Runnable onSuccess, Consumer<String> onError) {
         JsonObject json = new JsonObject();
         json.addProperty("price", price != null ? price : "");
         json.addProperty("description", description != null ? description : "");
         
-        HttpRequest request = createRequest("/listings/" + listingId.toString())
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/listings/" + listingId.toString())
                 .method("PATCH", HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
         
@@ -263,10 +339,11 @@ public class SupabaseClient {
     }
     
     /**
-     * Полностью удалить лот из БД
+     * Полностью удалить лот из БД - через Edge Function
      */
     public void deleteListing(UUID listingId, Runnable onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/listings/" + listingId.toString())
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/listings/" + listingId.toString())
                 .DELETE()
                 .build();
         
@@ -311,10 +388,11 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить сообщения для лота
+     * Пол��чить сообщения для лота (прямой REST API)
      */
     public void fetchMessages(UUID listingId, Consumer<List<ChatMessage>> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/messages?listing_id=" + listingId.toString())
+        // Используем прямой Supabase REST API для чтения
+        HttpRequest request = createRestRequest("/market_messages?listing_id=eq." + listingId.toString() + "&order=created_at.asc")
                 .GET()
                 .build();
         
@@ -334,7 +412,7 @@ public class SupabaseClient {
     }
     
     /**
-     * Отправить сообщение
+     * Отправить сообщение - через Edge Function
      */
     public void sendMessage(UUID listingId, UUID senderId, String senderName, String message, 
                            Runnable onSuccess, Consumer<String> onError) {
@@ -344,7 +422,8 @@ public class SupabaseClient {
         json.addProperty("sender_name", senderName);
         json.addProperty("message", message);
         
-        HttpRequest request = createRequest("/messages")
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/messages")
                 .POST(HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
         
@@ -444,9 +523,10 @@ public class SupabaseClient {
     /**
      * Получить все активные чаты пользователя с непрочитанными сообщениями
      * Возвращает список listing_id с количеством непрочитанных и последним сообщением
+     * Остается через Edge Function (сложная логика)
      */
     public void getUserActiveChats(UUID userId, Consumer<List<ActiveChat>> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/messages/chats?user_id=" + userId.toString())
+        HttpRequest request = createEdgeRequest("/messages/chats?user_id=" + userId.toString())
                 .GET()
                 .build();
         
@@ -491,9 +571,10 @@ public class SupabaseClient {
     
     /**
      * Получить количество непрочитанных сообщений в чатах продавец-покупатель
+     * Остается через Edge Function (сложная логика)
      */
     public void getUnreadMarketMessagesCount(UUID userId, Consumer<Integer> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/messages/unread?user_id=" + userId.toString())
+        HttpRequest request = createEdgeRequest("/messages/unread?user_id=" + userId.toString())
                 .GET()
                 .build();
         
@@ -518,15 +599,20 @@ public class SupabaseClient {
     }
     
     /**
-     * Пометить сообщения как прочитанные для конкретного листинга
+     * Пометить сообщения как прочитанные для конкретного листинга - через API
      */
     public void markMarketMessagesAsRead(UUID listingId, UUID userId, Runnable onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/messages/mark-read?listing_id=" + listingId.toString() + "&user_id=" + userId.toString())
+        String url = getEdgeApiUrl() + "/messages/mark-read?listing_id=" + listingId.toString() + "&user_id=" + userId.toString();
+        TradeMarketMod.LOGGER.info("[MarkRead] Calling: " + url);
+        
+        // Используем API для записи
+        HttpRequest request = createEdgeRequest("/messages/mark-read?listing_id=" + listingId.toString() + "&user_id=" + userId.toString())
                 .POST(HttpRequest.BodyPublishers.ofString("{}"))
                 .build();
         
         httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
                 .thenAccept(response -> {
+                    TradeMarketMod.LOGGER.info("[MarkRead] Response: " + response.statusCode() + " - " + response.body());
                     if (response.statusCode() == 200) {
                         onSuccess.run();
                     } else {
@@ -534,6 +620,7 @@ public class SupabaseClient {
                     }
                 })
                 .exceptionally(e -> {
+                    TradeMarketMod.LOGGER.error("[MarkRead] Error: " + e.getMessage());
                     onError.accept("Connection error: " + e.getMessage());
                     return null;
                 });
@@ -618,7 +705,7 @@ public class SupabaseClient {
     }
     
     /**
-     * Создать трейд-сессию (отправить приглашение)
+     * Создать трейд-сессию (отправить приглашение) - через Edge Function
      */
     public void createTradeSession(UUID initiatorId, String initiatorName, 
                                    UUID targetId, String targetName,
@@ -633,7 +720,8 @@ public class SupabaseClient {
         json.addProperty("target_name", targetName);
         json.addProperty("status", "pending");
         
-        HttpRequest request = createRequest("/trades")
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/trades")
                 .POST(HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
         
@@ -652,10 +740,12 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить активные трейды для игрока
+     * Получить активные трейды для игрока (прямой REST API)
      */
     public void fetchPlayerTrades(UUID playerId, Consumer<List<TradeSession>> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/trades")
+        // Получаем трейды где игрок - инициатор или цель, со статусом pending или active
+        String filter = "or=(initiator_id.eq." + playerId.toString() + ",target_id.eq." + playerId.toString() + ")&status=in.(pending,active)&order=created_at.desc";
+        HttpRequest request = createRestRequest("/trade_sessions?" + filter)
                 .GET()
                 .build();
         
@@ -675,10 +765,10 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить трейд-сессию по ID
+     * Получить трейд-сессию по ID (прямой REST API)
      */
     public void fetchTradeSession(UUID sessionId, Consumer<TradeSession> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/trades/" + sessionId.toString())
+        HttpRequest request = createRestRequest("/trade_sessions?id=eq." + sessionId.toString())
                 .GET()
                 .build();
         
@@ -702,7 +792,7 @@ public class SupabaseClient {
     }
     
     /**
-     * Обновить трейд-сессию
+     * Обновить трейд-сессию - через Edge Function
      */
     public void updateTradeSession(UUID sessionId, String items, int emeralds, boolean confirmed, 
                                    boolean isInitiator, Runnable onSuccess, Consumer<String> onError) {
@@ -717,7 +807,8 @@ public class SupabaseClient {
             json.addProperty("target_confirmed", confirmed);
         }
         
-        HttpRequest request = createRequest("/trades/" + sessionId.toString())
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/trades/" + sessionId.toString())
                 .method("PATCH", HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
         
@@ -743,13 +834,14 @@ public class SupabaseClient {
     }
     
     /**
-     * Отменить/завершить трейд
+     * Отменить/завершить трейд - через Edge Function
      */
     public void updateTradeStatus(UUID sessionId, String status, Runnable onSuccess, Consumer<String> onError) {
         JsonObject json = new JsonObject();
         json.addProperty("status", status);
         
-        HttpRequest request = createRequest("/trades/" + sessionId.toString())
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/trades/" + sessionId.toString())
                 .method("PATCH", HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
         
@@ -818,10 +910,12 @@ public class SupabaseClient {
     // ==================== ADMIN SYSTEM ====================
     
     /**
-     * Проверить, является ли игрок админом
+     * Проверить, является ли игрок админом (прямой REST API)
      */
     public void checkIsAdmin(String username, Consumer<AdminInfo> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/admin/check?username=" + urlEncode(username))
+        // Используем прямой REST API для чтения
+        // Поле в таблице называется minecraft_username
+        HttpRequest request = createRestRequest("/admins?minecraft_username=eq." + urlEncode(username))
                 .GET()
                 .build();
         
@@ -863,7 +957,7 @@ public class SupabaseClient {
     }
     
     /**
-     * Обновляет last_active для админа (вызывать при действиях админа)
+     * Обновляет last_active для админа (вызывать при действиях админа) - через Edge Function
      */
     public void updateAdminLastActive(String username) {
         if (username == null || username.isEmpty()) return;
@@ -871,7 +965,8 @@ public class SupabaseClient {
         JsonObject json = new JsonObject();
         json.addProperty("username", username);
         
-        HttpRequest request = createRequest("/admin/heartbeat")
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/admin/heartbeat")
                 .POST(HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
         
@@ -890,10 +985,11 @@ public class SupabaseClient {
     }
     
     /**
-     * Проверить блокировки пользователя
+     * Проверить блокировки пользователя (прямой REST API)
      */
     public void checkUserBans(String username, Consumer<List<UserBan>> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/bans/check?username=" + urlEncode(username))
+        // Используем прямой REST API для чтения
+        HttpRequest request = createRestRequest("/user_bans?minecraft_username=eq." + urlEncode(username) + "&is_active=eq.true")
                 .GET()
                 .build();
         
@@ -913,7 +1009,7 @@ public class SupabaseClient {
     }
     
     /**
-     * Выдать блокировку пользователю
+     * Выдать блокировку пользователю - через Edge Function
      */
     public void banUser(String targetUsername, String banType, String reason, String adminUsername, 
                         Long expiresAt, Runnable onSuccess, Consumer<String> onError) {
@@ -927,8 +1023,8 @@ public class SupabaseClient {
         }
         json.addProperty("is_active", true);
         
-        // Используем UPSERT с on_conflict для обновления существующего бана
-        HttpRequest request = createRequest("/bans")
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/bans")
                 .header("Prefer", "resolution=merge-duplicates,return=minimal")
                 .POST(HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
@@ -950,14 +1046,15 @@ public class SupabaseClient {
     }
     
     /**
-     * Снять блокировку пользователя
+     * Снять блокировку по��ьзователя - через Edge Function
      */
     public void unbanUser(String targetUsername, String banType, String adminUsername, 
                           Runnable onSuccess, Consumer<String> onError) {
         JsonObject json = new JsonObject();
         json.addProperty("is_active", false);
         
-        HttpRequest request = createRequest("/bans?username=" + urlEncode(targetUsername) + "&ban_type=" + banType)
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/bans?username=" + urlEncode(targetUsername) + "&ban_type=" + banType)
                 .method("PATCH", HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
         
@@ -978,10 +1075,10 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить все блокировки пользователя (для админ-панели)
+     * Получить все блокировки пользователя (для админ-панели) (прямой REST API)
      */
     public void getUserBansAdmin(String username, Consumer<List<UserBan>> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/bans?username=" + urlEncode(username))
+        HttpRequest request = createRestRequest("/user_bans?minecraft_username=eq." + urlEncode(username))
                 .GET()
                 .build();
         
@@ -1003,11 +1100,14 @@ public class SupabaseClient {
     // ==================== SUPPORT TICKETS ====================
     
     /**
-     * Создать тикет поддержки
+     * Создать тикет поддержки - через API
      */
     public void createSupportTicket(String subject, String createdBy, 
                                     Consumer<SupportTicket> onSuccess, Consumer<String> onError) {
         String ticketNumber = "T" + System.currentTimeMillis() % 100000000;
+        
+        TradeMarketMod.LOGGER.info("[CreateTicket] Using API URL: " + getEdgeApiUrl() + "/tickets");
+        TradeMarketMod.LOGGER.info("[CreateTicket] Mode: " + (apiConfig.isVpsMode() ? "VPS" : "Supabase"));
         
         JsonObject json = new JsonObject();
         json.addProperty("ticket_number", ticketNumber);
@@ -1015,7 +1115,8 @@ public class SupabaseClient {
         json.addProperty("status", "open");
         json.addProperty("created_by", createdBy);
         
-        HttpRequest request = createRequest("/tickets")
+        // Используем API для записи
+        HttpRequest request = createEdgeRequest("/tickets")
                 .header("Prefer", "return=representation")
                 .POST(HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
@@ -1046,10 +1147,11 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить тикеты пользователя
+     * Получить тикеты пользователя (прямой REST API)
      */
     public void getUserTickets(String username, Consumer<List<SupportTicket>> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/tickets?created_by=" + urlEncode(username))
+        // Используем прямой REST API для чтения
+        HttpRequest request = createRestRequest("/support_tickets?created_by=eq." + urlEncode(username) + "&order=created_at.desc")
                 .GET()
                 .build();
         
@@ -1069,10 +1171,11 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить все открытые тикеты (для админов)
+     * Получить все открытые тикеты (для админов) (прямой REST API)
      */
     public void getAllOpenTickets(Consumer<List<SupportTicket>> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/tickets?status=open")
+        // Используем прямой REST API для чтения
+        HttpRequest request = createRestRequest("/support_tickets?status=eq.open&order=created_at.desc")
                 .GET()
                 .build();
         
@@ -1092,7 +1195,7 @@ public class SupabaseClient {
     }
     
     /**
-     * Закрыть тикет (для админов)
+     * Закрыть тикет (для админов) - через Edge Function
      */
     public void closeTicket(String ticketId, String adminUsername, Runnable onSuccess, Consumer<String> onError) {
         JsonObject json = new JsonObject();
@@ -1100,7 +1203,8 @@ public class SupabaseClient {
         json.addProperty("closed_by", adminUsername);
         json.addProperty("closed_at", java.time.Instant.now().toString());
         
-        HttpRequest request = createRequest("/tickets/" + ticketId)
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/tickets/" + ticketId)
                 .method("PATCH", HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
         
@@ -1120,7 +1224,7 @@ public class SupabaseClient {
     }
     
     /**
-     * Отправить сообщение в тикет
+     * Отправить сообщение в тикет - через Edge Function
      */
     public void sendTicketMessage(String ticketId, String sender, String message, boolean isSupport,
                                   Runnable onSuccess, Consumer<String> onError) {
@@ -1130,7 +1234,8 @@ public class SupabaseClient {
         json.addProperty("message", message);
         json.addProperty("is_support", isSupport);
         
-        HttpRequest request = createRequest("/tickets/" + ticketId + "/messages")
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/tickets/" + ticketId + "/messages")
                 .POST(HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
         
@@ -1152,10 +1257,11 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить сообщения тикета
+     * Получить сообщения тикета (прямой REST API)
      */
     public void getTicketMessages(String ticketId, Consumer<List<TicketMessage>> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/tickets/" + ticketId + "/messages")
+        // Используем прямой REST API для чтения
+        HttpRequest request = createRestRequest("/ticket_messages?ticket_id=eq." + ticketId + "&order=created_at.asc")
                 .GET()
                 .build();
         
@@ -1175,14 +1281,15 @@ public class SupabaseClient {
     }
     
     /**
-     * Удалить лот (админ)
+     * Удалить лот (админ) - через Edge Function
      */
     public void deleteListingAdmin(String listingId, String adminUsername, String reason,
                                    Runnable onSuccess, Consumer<String> onError) {
         JsonObject json = new JsonObject();
         json.addProperty("active", false);
         
-        HttpRequest request = createRequest("/listings/" + listingId)
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/listings/" + listingId)
                 .method("PATCH", HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
         
@@ -1207,7 +1314,8 @@ public class SupabaseClient {
         JsonObject json = new JsonObject();
         json.addProperty("updated_at", java.time.Instant.now().toString());
         
-        HttpRequest request = createRequest("/tickets/" + ticketId)
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/tickets/" + ticketId)
                 .method("PATCH", HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
         
@@ -1227,7 +1335,8 @@ public class SupabaseClient {
             json.add("details", detailsJson);
         }
         
-        HttpRequest request = createRequest("/admin/logs")
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/admin/logs")
                 .POST(HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
         
@@ -1413,10 +1522,11 @@ public class SupabaseClient {
      * Проверяет, есть ли администраторы/поддержка онлайн.
      * Проверяет поле last_active в таблице admins. 
      * Если поля нет - считаем что поддержка доступна если есть хотя бы один админ.
+     * Остается через Edge Function (сложная логика с проверкой времени)
      */
     public void checkSupportOnline(Consumer<Boolean> onResult) {
-        // Проверяем есть ли хотя бы один админ с недавней активностью
-        HttpRequest request = createRequest("/admin/online")
+        // Используем Edge Function для сложной логики
+        HttpRequest request = createEdgeRequest("/admin/online")
                 .GET()
                 .build();
         
@@ -1576,10 +1686,10 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить избранное пользователя
+     * Получить избранное пользователя (прямой REST API)
      */
     public void fetchFavorites(UUID userId, Consumer<List<UUID>> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/favorites?user_id=" + userId.toString())
+        HttpRequest request = createRestRequest("/user_favorites?user_id=eq." + userId.toString())
                 .GET()
                 .build();
         
@@ -1614,7 +1724,7 @@ public class SupabaseClient {
     }
     
     /**
-     * Добавить в избранное
+     * Добавить в избранное - через Edge Function
      */
     public void addToFavorites(UUID userId, UUID listingId, Runnable onSuccess, Consumer<String> onError) {
         JsonObject json = new JsonObject();
@@ -1622,7 +1732,8 @@ public class SupabaseClient {
         json.addProperty("user_id", userId.toString());
         json.addProperty("listing_id", listingId.toString());
         
-        HttpRequest request = createRequest("/favorites")
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/favorites")
                 .header("Prefer", "return=minimal")
                 .POST(HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
@@ -1642,10 +1753,11 @@ public class SupabaseClient {
     }
     
     /**
-     * Удалить из избранного
+     * Удалить из избранного - через Edge Function
      */
     public void removeFromFavorites(UUID userId, UUID listingId, Runnable onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/favorites/" + listingId.toString())
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/favorites/" + listingId.toString())
                 .DELETE()
                 .build();
         
@@ -1712,11 +1824,12 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить историю транзакций пользователя
+     * Получить историю транзакций пользователя (прямой REST API)
      */
     public void fetchTransactionHistory(UUID userId, Consumer<List<Transaction>> onSuccess, Consumer<String> onError) {
         // Получаем транзакции где пользователь - продавец или покупатель
-        HttpRequest request = createRequest("/transactions?user_id=" + userId.toString())
+        String filter = "or=(seller_id.eq." + userId.toString() + ",buyer_id.eq." + userId.toString() + ")&order=completed_at.desc";
+        HttpRequest request = createRestRequest("/transactions?" + filter)
                 .GET()
                 .build();
         
@@ -1736,7 +1849,7 @@ public class SupabaseClient {
     }
     
     /**
-     * Записать транзакцию (статус "pending" - ож��дает подтверждения покупателем)
+     * Записать транзакцию (статус "pending" - ожидает подтверждения покупателем) - через Edge Function
      */
     public void recordTransaction(UUID listingId, UUID sellerId, String sellerName,
                                   UUID buyerId, String buyerName, String itemId,
@@ -1756,7 +1869,8 @@ public class SupabaseClient {
         json.addProperty("price", price);
         json.addProperty("status", "pending"); // Ожидает подтверждения покупателем
         
-        HttpRequest request = createRequest("/transactions")
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/transactions")
                 .header("Prefer", "return=minimal")
                 .POST(HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
@@ -1811,11 +1925,11 @@ public class SupabaseClient {
     }
     
     /**
-     * Подтвердить транзакцию покупателем (меняет статус на "confirmed")
+     * Подтвердить транзакцию покупателем (меняет статус на "confirmed") - через Edge Function
      */
     public void confirmTransaction(UUID transactionId, UUID buyerId, Runnable onSuccess, Consumer<String> onError) {
-        // Проверяем что транзакция принадлежит этому покупателю
-        HttpRequest request = createRequest("/transactions/" + transactionId.toString() + "/confirm")
+        // Используем Edge Function для записи (проверка принадлежности на сервере)
+        HttpRequest request = createEdgeRequest("/transactions/" + transactionId.toString() + "/confirm")
                 .POST(HttpRequest.BodyPublishers.ofString("{}"))
                 .build();
         
@@ -1834,10 +1948,10 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить ожидающие подтверждения транзакции для покупателя
+     * Получить ожидающие подтверждения транзакции для покупателя (прямой REST API)
      */
     public void fetchPendingTransactions(UUID buyerId, Consumer<List<Transaction>> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/transactions?buyer_id=" + buyerId.toString() + "&status=pending")
+        HttpRequest request = createRestRequest("/transactions?buyer_id=eq." + buyerId.toString() + "&status=eq.pending&order=completed_at.desc")
                 .GET()
                 .build();
         
@@ -1857,14 +1971,14 @@ public class SupabaseClient {
     }
     
     /**
-     * Проверить, есть ли подтвержденная транзакция на конкретный лот
+     * Проверить, есть ли подтвержденная транзакция на конкретный лот (прямой REST API)
      * (нужно для возможности оценки продавца)
      */
     public void hasConfirmedTransaction(UUID buyerId, UUID sellerId, UUID listingId, Consumer<Boolean> onResult, Consumer<String> onError) {
-        HttpRequest request = createRequest("/transactions/check?buyer_id=" + buyerId.toString() + 
-                "&seller_id=" + sellerId.toString() + 
-                "&listing_id=" + listingId.toString() +
-                "&status=confirmed")
+        HttpRequest request = createRestRequest("/transactions?buyer_id=eq." + buyerId.toString() + 
+                "&seller_id=eq." + sellerId.toString() + 
+                "&listing_id=eq." + listingId.toString() +
+                "&status=eq.confirmed")
                 .GET()
                 .build();
         
@@ -1888,14 +2002,14 @@ public class SupabaseClient {
     }
     
     /**
-     * Проверить, существует ли уже транзакция (pending или completed) для данного лота от данного покупателя
-     * Это предотвращает абуз - покупатель может начать сделку на товар только один раз
+     * Проверить, существует ли уже транзакция (pending или completed) для данного лота от данного покупателя (прямой REST API)
+     * Это предотвращает абуз - покупатель может начать сделку на ��овар только один раз
      */
     public void checkPendingTransactionExists(UUID listingId, UUID buyerId, 
                                               Consumer<Boolean> onResult, Consumer<String> onError) {
-        // Проверяем и pending и completed транзакции - чтобы предотвратить повторные сделки
-        HttpRequest request = createRequest("/transactions/exists?listing_id=" + listingId.toString() + 
-                "&buyer_id=" + buyerId.toString())
+        // Проверяем и pending и confirmed транзакции - чтобы предотвратить повторные сделки
+        HttpRequest request = createRestRequest("/transactions?listing_id=eq." + listingId.toString() + 
+                "&buyer_id=eq." + buyerId.toString() + "&status=in.(pending,confirmed)")
                 .GET()
                 .build();
         
@@ -1919,10 +2033,10 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить ожидающие подтверждения транзакции для ПРОДАВЦА (где он является seller)
+     * Получить ожидающие подтверждения транзакции для ПРОДАВЦА (где он является seller) (прямой REST API)
      */
     public void fetchSellerPendingTransactions(UUID sellerId, Consumer<List<Transaction>> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/transactions?seller_id=" + sellerId.toString() + "&status=pending")
+        HttpRequest request = createRestRequest("/transactions?seller_id=eq." + sellerId.toString() + "&status=eq.pending&order=completed_at.desc")
                 .GET()
                 .build();
         
@@ -1972,10 +2086,10 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить уведомления пользователя
+     * Получить уведомления пользователя (прямой REST API)
      */
     public void fetchNotifications(UUID userId, Consumer<List<Notification>> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/notifications?user_id=" + userId.toString())
+        HttpRequest request = createRestRequest("/user_notifications?user_id=eq." + userId.toString() + "&order=created_at.desc")
                 .GET()
                 .build();
         
@@ -1995,7 +2109,7 @@ public class SupabaseClient {
     }
     
     /**
-     * Создать уведомление
+     * Создать уведомление - через Edge Function
      */
     public void createNotification(UUID userId, String type, String title, String message,
                                    UUID relatedListingId, Runnable onSuccess, Consumer<String> onError) {
@@ -2010,7 +2124,8 @@ public class SupabaseClient {
         }
         json.addProperty("is_read", false);
         
-        HttpRequest request = createRequest("/notifications")
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/notifications")
                 .header("Prefer", "return=minimal")
                 .POST(HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
@@ -2030,13 +2145,14 @@ public class SupabaseClient {
     }
     
     /**
-     * Пометить уведомление как прочитанное
+     * Пометить уведомление как прочитанное - через Edge Function
      */
     public void markNotificationRead(UUID notificationId, Runnable onSuccess, Consumer<String> onError) {
         JsonObject json = new JsonObject();
         json.addProperty("is_read", true);
         
-        HttpRequest request = createRequest("/notifications/" + notificationId.toString())
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/notifications/" + notificationId.toString())
                 .method("PATCH", HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
         
@@ -2055,10 +2171,11 @@ public class SupabaseClient {
     }
     
     /**
-     * Удалить все уведомления пользователя
+     * Удалить все уведомления пользователя - через Edge Function
      */
     public void clearAllNotifications(UUID userId, Runnable onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/notifications/clear")
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/notifications/clear")
                 .DELETE()
                 .build();
         
@@ -2111,7 +2228,7 @@ public class SupabaseClient {
     }
     
     // =====================================================
-    // МЕТОДЫ ДЛЯ РЕПУТАЦИИ ПРОДАВЦОВ
+    // МЕТОДЫ ДЛЯ РЕПУ��АЦИИ ПРОДАВЦОВ
     // =====================================================
     
     /**
@@ -2169,10 +2286,10 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить репутацию продавца
+     * Получить репутацию продавца (прямой REST API)
      */
     public void fetchSellerReputation(UUID sellerId, Consumer<SellerReputation> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/ratings?seller_id=" + sellerId.toString())
+        HttpRequest request = createRestRequest("/seller_ratings?seller_id=eq." + sellerId.toString())
                 .GET()
                 .build();
         
@@ -2216,10 +2333,10 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить количество успешных (подтвержденных) сделок продавца
+     * Получить количество успешных (подтвержденных) сделок продавца (прямой REST API)
      */
     private void fetchTransactionCount(UUID sellerId, Consumer<Integer> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/transactions/count?seller_id=" + sellerId.toString() + "&status=confirmed")
+        HttpRequest request = createRestRequest("/transactions?seller_id=eq." + sellerId.toString() + "&status=eq.confirmed&select=id")
                 .header("Prefer", "count=exact")
                 .GET()
                 .build();
@@ -2271,7 +2388,8 @@ public class SupabaseClient {
             json.addProperty("rating", rating);
             json.addProperty("comment", comment != null ? comment : "");
             
-            HttpRequest request = createRequest("/ratings")
+            // Используем Edge Function для записи
+            HttpRequest request = createEdgeRequest("/ratings")
                     .POST(HttpRequest.BodyPublishers.ofString(json.toString()))
                     .build();
             
@@ -2292,10 +2410,10 @@ public class SupabaseClient {
     }
     
     /**
-     * Проверить, оценивал ли польз��в��тель уже этого продавца
+     * Проверить, оценивал ли пользователь уже этого продавца (прямой REST API)
      */
     public void checkIfAlreadyRated(UUID sellerId, UUID raterId, Consumer<Boolean> onResult, Consumer<String> onError) {
-        HttpRequest request = createRequest("/ratings/check?seller_id=" + sellerId.toString() + "&rater_id=" + raterId.toString())
+        HttpRequest request = createRestRequest("/seller_ratings?seller_id=eq." + sellerId.toString() + "&rater_id=eq." + raterId.toString())
                 .GET()
                 .build();
         
@@ -2319,10 +2437,10 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить количество непрочитанных уведомлений
+     * Получить количество непрочитанных уведомлений (прямой REST API)
      */
     public void fetchUnreadNotificationCount(UUID userId, Consumer<Integer> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/notifications/unread?user_id=" + userId.toString())
+        HttpRequest request = createRestRequest("/user_notifications?user_id=eq." + userId.toString() + "&is_read=eq.false&select=id")
                 .GET()
                 .build();
         
@@ -2348,7 +2466,7 @@ public class SupabaseClient {
     // ==================== USER LOGS (Админ-функции) ====================
     
     /**
-     * Получить логи пользователей (только для админов)
+     * Получить логи пользователей (только для админов) - через Edge Function (сложный запрос с пагинацией)
      */
     public void getUserLogs(int limit, int offset, String level, String category, String playerName,
                            Consumer<JsonObject> onSuccess, Consumer<String> onError) {
@@ -2363,7 +2481,8 @@ public class SupabaseClient {
             url.append("&player_name=").append(playerName);
         }
         
-        HttpRequest request = createRequest(url.toString())
+        // Используем Edge Function для сложной логики с пагинацией
+        HttpRequest request = createEdgeRequest(url.toString())
                 .GET()
                 .build();
         
@@ -2453,7 +2572,7 @@ public class SupabaseClient {
     }
     
     /**
-     * Отправить heartbeat для отслеживания онлайн статуса пользователя
+     * Отправить heartbeat для отслеживания онлайн статуса пользователя - через Edge Function
      */
     public void sendUserHeartbeat(String playerUUID, String playerName, String serverIP, String modVersion,
                                   Runnable onSuccess, Consumer<String> onError) {
@@ -2463,7 +2582,8 @@ public class SupabaseClient {
         json.addProperty("server_ip", serverIP != null ? serverIP : "");
         json.addProperty("mod_version", modVersion != null ? modVersion : "");
         
-        HttpRequest request = createRequest("/users/heartbeat")
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/users/heartbeat")
                 .POST(HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
         
@@ -2482,10 +2602,11 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить список онлайн пользователей
+     * Получить список онлайн пользователей - через Edge Function (сложная логика с проверкой времени)
      */
     public void getOnlineUsers(Consumer<List<OnlineUser>> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/users/online")
+        // Используем Edge Function для сложной логики с проверкой времени активности
+        HttpRequest request = createEdgeRequest("/users/online")
                 .GET()
                 .build();
         
@@ -2522,7 +2643,7 @@ public class SupabaseClient {
     }
     
     /**
-     * Создать или получить чат с пользователем
+     * Создать или получить чат с пользователем - через Edge Function
      */
     public void createOrGetAdminChat(String adminName, String userUuid, String userName,
                                      Consumer<AdminUserChat> onSuccess, Consumer<String> onError) {
@@ -2531,7 +2652,8 @@ public class SupabaseClient {
         json.addProperty("user_uuid", userUuid);
         json.addProperty("user_name", userName);
         
-        HttpRequest request = createRequest("/admin-chats")
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/admin-chats")
                 .POST(HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
         
@@ -2563,10 +2685,10 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить сообщения чата
+     * Получить сообщения чата (прямой REST API)
      */
     public void getAdminChatMessages(String chatId, Consumer<List<AdminUserMessage>> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/admin-chats/" + chatId + "/messages")
+        HttpRequest request = createRestRequest("/admin_user_messages?chat_id=eq." + chatId + "&order=created_at.asc")
                 .GET()
                 .build();
         
@@ -2605,7 +2727,7 @@ public class SupabaseClient {
     }
     
     /**
-     * Отправить сообщение в чат админ-юзер
+     * Отправить сообщение в чат админ-юзер - через Edge Function
      */
     public void sendAdminChatMessage(String chatId, String senderName, String senderType, String content,
                                      Runnable onSuccess, Consumer<String> onError) {
@@ -2614,7 +2736,8 @@ public class SupabaseClient {
         json.addProperty("sender_type", senderType); // "admin" или "user"
         json.addProperty("content", content);
         
-        HttpRequest request = createRequest("/admin-chats/" + chatId + "/messages")
+        // ��спользуем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/admin-chats/" + chatId + "/messages")
                 .POST(HttpRequest.BodyPublishers.ofString(json.toString()))
                 .build();
         
@@ -2633,10 +2756,10 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить чаты пользователя с админами (для обычных юзеров)
+     * Получить чаты пользователя с админами (для обычных юзеров) (прямой REST API)
      */
     public void getUserAdminChats(String userUuid, Consumer<JsonArray> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/user-admin-messages?user_uuid=" + userUuid)
+        HttpRequest request = createRestRequest("/admin_user_chats?user_uuid=eq." + userUuid + "&order=updated_at.desc")
                 .GET()
                 .build();
         
@@ -2660,10 +2783,11 @@ public class SupabaseClient {
     }
     
     /**
-     * Получить количество непрочитанных сообщений от админов
+     * Получить количество непрочитанных сообщений от админов - чер��з Edge Function (сложная логика)
      */
     public void getUnreadAdminMessagesCount(String userUuid, Consumer<Integer> onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/user-admin-messages/unread?user_uuid=" + userUuid)
+        // Используем Edge Function для сложной логики подсчета
+        HttpRequest request = createEdgeRequest("/user-admin-messages/unread?user_uuid=" + userUuid)
                 .GET()
                 .build();
         
@@ -2688,10 +2812,11 @@ public class SupabaseClient {
     }
     
     /**
-     * Пометить все сообщения от админа в чате как прочитанные
+     * Пометить все сообщения от админа в чате как прочитанные - через Edge Function
      */
     public void markAdminMessagesAsRead(String chatId, Runnable onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/user-admin-messages/mark-read?chat_id=" + chatId)
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/user-admin-messages/mark-read?chat_id=" + chatId)
                 .POST(HttpRequest.BodyPublishers.ofString("{}"))
                 .build();
         
@@ -2710,10 +2835,11 @@ public class SupabaseClient {
     }
     
     /**
-     * Пометить все сообщения от пользователя как прочитанные (для админа)
+     * Пометить все сообщения от пользователя как прочитанные (для админа) - через Edge Function
      */
     public void markUserMessagesAsReadForAdmin(String chatId, Runnable onSuccess, Consumer<String> onError) {
-        HttpRequest request = createRequest("/admin-chats/mark-read?chat_id=" + chatId)
+        // Используем Edge Function для записи
+        HttpRequest request = createEdgeRequest("/admin-chats/mark-read?chat_id=" + chatId)
                 .POST(HttpRequest.BodyPublishers.ofString("{}"))
                 .build();
         

@@ -416,9 +416,9 @@ public final class SupportPanelRenderer {
                     closeBtnX + 10, closeBtnY + 5, 0xFFFFFFFF);
         }
         
-        // Область чата
+        // Область чата (увеличена для большей панели)
         int chatAreaY = chatY + headerHeight + 4;
-        int chatAreaHeight = isAdmin ? 155 : 170;
+        int chatAreaHeight = isAdmin ? 220 : 240;
         context.fill(btnX, chatAreaY, btnX + btnWidth, chatAreaY + chatAreaHeight, 0xFF1A1A1A);
         RenderUtils.drawBorder(context, btnX, chatAreaY, btnWidth, chatAreaHeight, COLOR_BORDER);
         

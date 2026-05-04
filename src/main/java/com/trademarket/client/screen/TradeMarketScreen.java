@@ -1111,7 +1111,7 @@ public class TradeMarketScreen extends Screen {
             String descLabel = lang.get("conditions");
             int descLabelWidth = this.textRenderer.getWidth(descLabel);
             
-            // Рендерим метку "Условия/Conditions:"
+            // Рендерим метку "Услов��я/Conditions:"
             context.drawTextWithShadow(this.textRenderer,
                     Text.literal(descLabel),
                     contentX + 10, currentLineY, COLOR_GOLD);
@@ -1735,14 +1735,14 @@ public class TradeMarketScreen extends Screen {
         if (supportExpanded) {
             int basePanelX = tabX + tabSize;
             int basePanelY = tabY - 30;
-            int panelWidth = 260;
-            int panelHeight = 280;
+            int panelWidth = 320;
+            int panelHeight = 360;
             
             // Применяем смещение от перетаскивания
             int panelX = basePanelX + supportPanelOffsetX;
             int panelY = basePanelY + supportPanelOffsetY;
             
-            // Ограни��иваем позицию панели в пределах экрана
+            // Ограничиваем позицию панели в пределах экрана
             panelX = Math.max(10, Math.min(this.width - panelWidth - 10, panelX));
             panelY = Math.max(10, Math.min(this.height - panelHeight - 10, panelY));
             
@@ -1751,8 +1751,20 @@ public class TradeMarketScreen extends Screen {
             int btnWidth = panelWidth - 16;
             int headerHeight = 22;
             
-            // Проверяем клик по заголовку для перетаскивания
-            if (mx >= panelX && mx < panelX + panelWidth &&
+            // Проверяем клик по кнопке закрытия X
+            int closeX = panelX + panelWidth - 22;
+            int closeY = panelY + 5;
+            int closeSize = 14;
+            if (mx >= closeX && mx < closeX + closeSize &&
+                my >= closeY && my < closeY + closeSize) {
+                supportExpanded = false;
+                supportPanelOffsetX = 0;
+                supportPanelOffsetY = 0;
+                return true;
+            }
+            
+            // Проверяем клик по заголовку для перетаскивания (исключая кнопку X)
+            if (mx >= panelX && mx < panelX + panelWidth - 25 &&
                 my >= panelY && my < panelY + headerHeight) {
                 isDraggingSupportPanel = true;
                 dragStartX = mx - supportPanelOffsetX;
@@ -4079,7 +4091,7 @@ public class TradeMarketScreen extends Screen {
         int contentWidth = GUI_WIDTH - SIDEBAR_WIDTH - 25;
         int contentHeight = GUI_HEIGHT - 70;
         
-        // Если открыт чат с пользователем
+        // Если от��рыт чат с пользователем
         if (showAdminUserChat && activeAdminUserChat != null) {
             // К��опка назад
             int backBtnX = contentX + 5;

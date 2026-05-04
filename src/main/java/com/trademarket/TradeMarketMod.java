@@ -18,10 +18,9 @@ public class TradeMarketMod implements ModInitializer {
     public void onInitialize() {
         LOGGER.info("Trade Market mod initializing...");
         
-        // Мод работает полностью на клиенте через Supabase
-        // Серверная логика не требуется - все данные хранятся в облаке
+        // Мод работает полностью на клиенте через REST API
+        // Серверная логика не требуется - все данные хранятся в БД
         
         LOGGER.info("Trade Market mod initialized!");
-        LOGGER.info("Data is stored in Supabase cloud database");
     }
 }

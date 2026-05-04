@@ -90,7 +90,7 @@ public class MarketDataManager {
                 for (MarketListing listing : fetchedListings) {
                     listings.put(listing.getListingId(), listing);
                 }
-                TradeMarketMod.LOGGER.info("Fetched {} listings from Supabase", listings.size());
+                TradeMarketMod.LOGGER.info("Fetched {} listings from API", listings.size());
                 notifyListeners();
                 if (onComplete != null) onComplete.run();
             },

@@ -4,6 +4,7 @@ import com.trademarket.TradeMarketMod;
 import com.trademarket.client.LocalizationManager;
 import com.trademarket.client.RemoteLogger;
 import com.trademarket.client.ToastNotificationManager;
+import com.trademarket.data.ApiConfig;
 import com.trademarket.data.MarketDataManager;
 import com.trademarket.data.MarketListing;
 import com.trademarket.data.SupabaseClient;
@@ -26,8 +27,8 @@ public class NetworkHandler {
      * Теперь вся логика работает через Supabase напрямую с клиента
      */
     public static void registerServerPackets() {
-        // Серверные пакеты больше не нужны - всё работает через Supabase
-        TradeMarketMod.LOGGER.info("Trade Market работает в режиме Supabase - серверные пакеты не требуются");
+        // Серверные пакеты больше не нужны - всё работает через API
+        TradeMarketMod.LOGGER.info("Trade Market работает через REST API - серверные пакеты не требуются");
     }
 
     /**
@@ -36,7 +37,11 @@ public class NetworkHandler {
     @Environment(EnvType.CLIENT)
     public static void registerClientPackets() {
         // Клиентские пакеты от сервера больше не нужны
-        TradeMarketMod.LOGGER.info("Trade Market клиент инициализирован - используется Supabase");
+        ApiConfig config = ApiConfig.getInstance();
+        String mode = config.getMode();
+        String apiUrl = config.getApiUrl();
+        TradeMarketMod.LOGGER.info("Trade Market клиент инициализирован - режим: " + mode);
+        TradeMarketMod.LOGGER.info("Trade Market API URL: " + apiUrl);
     }
 
     // ==================== Client Methods ====================
@@ -228,7 +233,7 @@ public class NetworkHandler {
 
         MarketDataManager.getInstance().fetchAllListings(
                 () -> {
-                    TradeMarketMod.LOGGER.info("Лоты успешно загружены из Supabase");
+                    TradeMarketMod.LOGGER.info("Лоты успешно загружены из API");
                 },
                 error -> {
                     TradeMarketMod.LOGGER.error("Ошибка загрузки лотов: " + error);

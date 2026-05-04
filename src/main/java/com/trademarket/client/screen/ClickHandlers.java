@@ -287,9 +287,9 @@ public class ClickHandlers {
             }
         }
         
-        // Область чата и поле ввода
+        // Область чата и поле ввода (увеличена для большей панели)
         int chatAreaY = chatY + headerHeight + 4;
-        int chatAreaHeight = isAdmin ? 155 : 170;
+        int chatAreaHeight = isAdmin ? 220 : 240;
         
         if (activeTicket != null && !activeTicket.status.equals("closed")) {
             int inputY = chatAreaY + chatAreaHeight + 6;

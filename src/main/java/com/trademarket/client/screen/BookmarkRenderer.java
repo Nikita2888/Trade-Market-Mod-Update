@@ -461,8 +461,8 @@ public class BookmarkRenderer {
         int accentColor = COLOR_RED;
         int basePanelX = tabX + tabSize;
         int basePanelY = tabY - 30;
-        int panelWidth = 260;
-        int panelHeight = 280;
+        int panelWidth = 320;
+        int panelHeight = 360;
         
         // Применяем смещение от перетаскивания
         int panelX = basePanelX + state.supportPanelOffsetX;
@@ -489,8 +489,23 @@ public class BookmarkRenderer {
         int headerBg = headerHovered || state.isDraggingSupportPanel ? 0xFF3A2830 : COLOR_BG_DARK;
         context.fill(panelX + 1, panelY + 1, panelX + panelWidth - 1, panelY + headerHeight, headerBg);
         
-        // Иконка перетаскивания (три горизонтальные линии)
-        int dragIconX = panelX + panelWidth - 20;
+        // Кнопка закрытия X
+        int closeX = panelX + panelWidth - 22;
+        int closeY = panelY + 5;
+        int closeSize = 14;
+        boolean closeHovered = mouseX >= closeX && mouseX < closeX + closeSize &&
+                mouseY >= closeY && mouseY < closeY + closeSize;
+        
+        int closeBg = closeHovered ? 0xFFE53935 : 0xFF5A3A3A;
+        context.fill(closeX, closeY, closeX + closeSize, closeY + closeSize, closeBg);
+        RenderUtils.drawBorder(context, closeX, closeY, closeSize, closeSize, closeHovered ? 0xFFFF6B6B : COLOR_BORDER);
+        
+        // Рисуем X
+        int xColor = closeHovered ? 0xFFFFFFFF : COLOR_TEXT_MUTED;
+        context.drawTextWithShadow(textRenderer, Text.literal("X"), closeX + 3, closeY + 3, xColor);
+        
+        // Иконка перетаскивания (три горизонтальные линии) - сдвигаем левее
+        int dragIconX = panelX + panelWidth - 40;
         int dragIconY = panelY + 7;
         for (int i = 0; i < 3; i++) {
             context.fill(dragIconX, dragIconY + i * 3, dragIconX + 12, dragIconY + i * 3 + 1, 
